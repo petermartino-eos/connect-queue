@@ -250,6 +250,16 @@ function checkRollover(){
   genWeekly();
 }
 
+function hasUpcomingSession(c){
+  if(!c.zohoSession)return false;
+  var parts=c.zohoSession.split('-');
+  if(parts.length<3)return false;
+  var sessionDate=new Date(parseInt(parts[0]),parseInt(parts[1])-1,parseInt(parts[2]));
+  var today=new Date();today.setHours(0,0,0,0);
+  var in4weeks=new Date(today.getTime()+28*24*60*60*1000);
+  return sessionDate>=today&&sessionDate<=in4weeks;
+}
+
 function genWeekly(){
   const thresh=gThresh(),cws=curWkStart();
   const contacts=gC().filter(c=>!c.archived);
@@ -258,13 +268,15 @@ function genWeekly(){
   const puntedIds=new Set(gPunted());
   const selected=[];
   contacts.forEach(c=>{
-    if(puntedIds.has(c.id))return;
     const {total}=calcScore(c);
     const pinned=isPinnedThisWeek(c);
     const manual=c.addedToWeek===cws;
     const aboveThresh=total>=thresh;
     const wasDone=exMap[c.id]?.done||false;
-    if(pinned||manual||aboveThresh||wasDone){
+    const hasSession=hasUpcomingSession(c);
+    // Session clients always appear (even if punted), others respect punt
+    if(!hasSession&&puntedIds.has(c.id))return;
+    if(pinned||manual||aboveThresh||wasDone||hasSession){
       selected.push({
         id:c.id,
         done:exMap[c.id]?.done||false,
@@ -272,6 +284,7 @@ function genWeekly(){
         pts:exMap[c.id]?.pts||0,
         pinned:exMap[c.id]?.pinned||pinned,
         manual:exMap[c.id]?.manual||manual,
+        session:hasSession,
       });
     }
   });
@@ -283,6 +296,7 @@ function genWeekly(){
       if(bs-as!==0)return bs-as;
     }
     if(a.pinned&&!b.pinned)return -1;if(!a.pinned&&b.pinned)return 1;
+    if(a.session&&!b.session)return -1;if(!a.session&&b.session)return 1;
     if(a.manual&&!b.manual)return -1;if(!a.manual&&b.manual)return 1;
     return calcScore(cmap[b.id]||{}).total - calcScore(cmap[a.id]||{}).total;
   });
@@ -321,7 +335,7 @@ function mkCard(w,contacts,types,priorities,stages,actions){
     +(w.manual&&!w.pinned?'<span class="mb"><i class="ti ti-hand-finger" style="font-size:10px"></i> added manually</span>':'')
     +(od?'<span class="ob">overdue</span>':'')
     +(sug?'<span class="badge" style="background:#FBEAF0;color:#72243E;font-style:italic">try: '+sug+'</span>':'')
-    +(c.zohoSession?'<span class="badge" style="background:#FFF3E0;color:#8B4513;font-weight:600"><i class="ti ti-calendar-event" style="font-size:10px"></i> Session '+fmtSessionDate(c.zohoSession)+(c.zohoSessionTime?' '+c.zohoSessionTime:'')+'</span>':'')
+    +(w.session&&c.zohoSession?'<span class="badge" style="background:#FFF3E0;color:#8B4513;font-weight:600"><i class="ti ti-calendar-event" style="font-size:10px"></i> Session '+fmtSessionDate(c.zohoSession)+(c.zohoSessionTime?' '+c.zohoSessionTime:'')+'</span>':'')
     +'</div>'
     +'<div class="lr">'
     +'<button onclick="openLogModal('+w.id+')" class="btnp btnsm"><i class="ti ti-edit"></i> Log action</button>'
@@ -1507,7 +1521,9 @@ function zohoDisconnect(){
         localStorage.setItem('rp6_zoho_token_expiry',Date.now()+parseInt(expiresIn)*1000);
       }
       window.history.replaceState({},'',ZOHO_REDIRECT);
-      showTab('settings');
+      var returnTab=localStorage.getItem('rp6_zoho_return_tab')||'settings';
+      localStorage.removeItem('rp6_zoho_return_tab');
+      showTab(returnTab);
       setTimeout(function(){zohoSync();},400);
       return;
     }
@@ -1520,11 +1536,58 @@ function zohoDisconnect(){
     zohoExchangeCode(code);
   }
 })();
+// Auto-sync Zoho on open if connected and stale (>23 hours) or token expired
+function zohoAutoSync(){
+  var token=localStorage.getItem('rp6_zoho_access_token');
+  if(!token)return; // not connected, skip silently
+  var expiry=parseInt(localStorage.getItem('rp6_zoho_token_expiry')||'0');
+  var lastSync=localStorage.getItem('rp6_zoho_last_sync');
+  var tokenExpired=expiry&&Date.now()>expiry;
+  var syncStale=!lastSync||(Date.now()-new Date(lastSync).getTime())>23*60*60*1000;
+  if(tokenExpired){
+    // Token expired — redirect to re-auth silently
+    localStorage.setItem('rp6_zoho_pending_auth','1');
+    localStorage.setItem('rp6_zoho_return_tab','weekly');
+    var clientId=localStorage.getItem('rp6_zoho_client_id')||ZOHO_DEFAULT_CLIENT_ID;
+    var params=new URLSearchParams({response_type:'token',client_id:clientId,scope:ZOHO_SCOPE,redirect_uri:ZOHO_REDIRECT,prompt:'consent'});
+    window.location.href='https://accounts.zoho.com/oauth/v2/auth?'+params.toString();
+    return;
+  }
+  if(syncStale){
+    // Token still valid, just re-sync quietly
+    var today=new Date();
+    var in4weeks=new Date(today.getTime()+28*24*60*60*1000);
+    var fmt=function(d){return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');};
+    var criteria='(Next_Session_Date:between:'+fmt(today)+','+fmt(in4weeks)+')';
+    var url='https://www.zohoapis.com/crm/v3/Accounts/search?criteria='+encodeURIComponent(criteria)+'&fields=Account_Name,Next_Session_Date,Next_Session_Time&per_page=200';
+    fetch(url,{headers:{'Authorization':'Zoho-oauthtoken '+token}})
+    .then(function(r){
+      if(r.status===401){
+        // Token actually expired — clear it so next open re-auths
+        localStorage.removeItem('rp6_zoho_access_token');
+        return null;
+      }
+      return r.json();
+    })
+    .then(function(data){
+      if(!data)return;
+      localStorage.setItem('rp6_zoho_last_sync',new Date().toISOString());
+      var sessions=(data.data||[]).map(function(r){
+        return{name:(r.Account_Name||'').trim(),date:r.Next_Session_Date,time:r.Next_Session_Time||''};
+      });
+      applyZohoSessions(sessions);
+      genWeekly();
+      renderWeekly();
+    })
+    .catch(function(){});// fail silently on auto-sync
+  }
+}
 // ── End Zoho Integration ──────────────────────────────────────────────────
 
 checkRollover();
 if(!gW().length&&gC().length)genWeekly();
 renderWeekly();
+zohoAutoSync();
 
 </script>
 </body>
