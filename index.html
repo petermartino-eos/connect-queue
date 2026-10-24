@@ -321,6 +321,7 @@ function mkCard(w,contacts,types,priorities,stages,actions){
     +(w.manual&&!w.pinned?'<span class="mb"><i class="ti ti-hand-finger" style="font-size:10px"></i> added manually</span>':'')
     +(od?'<span class="ob">overdue</span>':'')
     +(sug?'<span class="badge" style="background:#FBEAF0;color:#72243E;font-style:italic">try: '+sug+'</span>':'')
+    +(c.zohoSession?'<span class="badge" style="background:#FFF3E0;color:#8B4513;font-weight:600"><i class="ti ti-calendar-event" style="font-size:10px"></i> Session '+fmtSessionDate(c.zohoSession)+(c.zohoSessionTime?' '+c.zohoSessionTime:'')+'</span>':'')
     +'</div>'
     +'<div class="lr">'
     +'<button onclick="openLogModal('+w.id+')" class="btnp btnsm"><i class="ti ti-edit"></i> Log action</button>'
@@ -610,7 +611,7 @@ function renderContacts(){
       +'<td style="font-weight:500">'+c.name+(c.archived?' <span style="font-size:10px;color:var(--tx2)">[archived]</span>':'')+'</td>'
       +'<td><span class="badge" style="background:'+cl.bg+';color:'+cl.tx+'">'+type.label+'</span></td>'
       +'<td>'+(priority?'<span class="badge" style="background:'+priBg+';color:'+priTx+'">'+priority.label+'</span>':'—')+'</td>'
-      +'<td style="color:'+(od?'#E24B4A':'var(--tx)')+'">'+(dtxt)+(pn?' <i class="ti ti-pin" style="font-size:11px;color:#185FA5"></i><span style="font-size:10px;color:#185FA5"> '+fud+'</span>':'')+'</td>'
+      +'<td style="color:'+(od?'#E24B4A':'var(--tx)')+'">'+(dtxt)+(pn?' <i class="ti ti-pin" style="font-size:11px;color:#185FA5"></i><span style="font-size:10px;color:#185FA5"> '+fud+'</span>':'')+(c.zohoSession?' <span style="font-size:10px;color:#8B4513;font-weight:600"><i class="ti ti-calendar-event" style="font-size:10px"></i> '+fmtSessionDate(c.zohoSession)+'</span>':'')+'</td>'
       +'<td style="font-weight:500">'+sc+'</td>'
       +'<td style="white-space:nowrap">'
       +'<button class="btnp btnsm" data-cid="'+c.id+'" onclick="logFromContacts(this.dataset.cid)" style="margin-right:3px"><i class="ti ti-edit"></i> Log</button>'
@@ -1144,6 +1145,26 @@ function renderSettings(){
     +'<button class="btnp" onclick="exportBackup()"><i class="ti ti-database-export"></i> Export full backup</button>'
     +'<label class="btn" style="cursor:pointer"><i class="ti ti-database-import"></i> Import backup&hellip;<input type="file" accept=".json" style="display:none" onchange="importBackup(event)"></label>'
     +'</div></div>';
+
+  var zohoClientId=localStorage.getItem('rp6_zoho_client_id')||'';
+  var zohoConnected=!!localStorage.getItem('rp6_zoho_access_token');
+  var zohoLastSync=localStorage.getItem('rp6_zoho_last_sync');
+  var zohoStatus=zohoConnected
+    ?'<span style="color:#0F6E56;font-weight:500">&#10003; Connected</span>'+(zohoLastSync?' &middot; Last sync: '+new Date(zohoLastSync).toLocaleString():'')
+    :'<span style="color:var(--tx2)">Not connected</span>';
+  html+='<div class="sblock"><h3>Zoho CRM — Session Sync</h3>'
+    +'<p style="font-size:13px;color:var(--tx2);margin-bottom:12px">Automatically flag contacts who have a session scheduled in the next 4 weeks. Matching is done by name against your Connect Queue contacts.</p>'
+    +'<div style="margin-bottom:12px;font-size:13px">Status: '+zohoStatus+'</div>'
+    +'<div style="margin-bottom:10px"><label style="font-size:12px;color:var(--tx2);display:block;margin-bottom:4px">Zoho Client ID</label>'
+    +'<input type="text" id="zoho-client-id" value="'+zohoClientId+'" placeholder="1000.XXXXXXXXXX" style="width:100%;max-width:420px;font-size:13px;padding:6px 10px;border:0.5px solid var(--bd2);border-radius:var(--rm);background:var(--bg2);color:var(--tx)"></div>'
+    +'<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">'
+    +'<button class="btnp" onclick="zohoConnect()"><i class="ti ti-brand-zoho"></i> '+(zohoConnected?'Re-connect':'Connect to Zoho')+'</button>'
+    +(zohoConnected?'<button class="btn" onclick="zohoSync()" id="zoho-sync-btn"><i class="ti ti-refresh"></i> Sync now</button>':'')
+    +(zohoConnected?'<button class="btn" style="color:#E24B4A;border-color:#E24B4A33" onclick="zohoDisconnect()"><i class="ti ti-unlink"></i> Disconnect</button>':'')
+    +'</div>'
+    +(zohoConnected?'<div id="zoho-sync-status" style="margin-top:10px;font-size:12px;color:var(--tx2)"></div>':'')
+    +'</div>';
+
   document.getElementById('tab-settings').innerHTML=html;
 }
 
@@ -1277,6 +1298,216 @@ function showTab(name){
   if(name==='settings')renderSettings();
   renderScorebar();
 }
+
+function fmtSessionDate(iso){
+  if(!iso)return'';
+  var parts=iso.split('-');
+  if(parts.length<3)return iso;
+  var d=new Date(parseInt(parts[0]),parseInt(parts[1])-1,parseInt(parts[2]));
+  return d.toLocaleDateString('en-US',{month:'short',day:'numeric'});
+}
+
+// ── Zoho CRM Integration ──────────────────────────────────────────────────
+var ZOHO_REDIRECT=location.origin+location.pathname;
+var ZOHO_SCOPE='ZohoCRM.modules.Accounts.READ';
+
+function zohoConnect(){
+  var clientId=(document.getElementById('zoho-client-id')||{}).value||localStorage.getItem('rp6_zoho_client_id')||'';
+  clientId=clientId.trim();
+  if(!clientId){alert('Please enter your Zoho Client ID first.');return;}
+  localStorage.setItem('rp6_zoho_client_id',clientId);
+
+  // PKCE: generate code verifier + challenge
+  var verifier=generateCodeVerifier();
+  localStorage.setItem('rp6_zoho_verifier',verifier);
+  generateCodeChallenge(verifier).then(function(challenge){
+    var params=new URLSearchParams({
+      response_type:'code',
+      client_id:clientId,
+      scope:ZOHO_SCOPE,
+      redirect_uri:ZOHO_REDIRECT,
+      access_type:'offline',
+      code_challenge:challenge,
+      code_challenge_method:'S256',
+      prompt:'consent'
+    });
+    localStorage.setItem('rp6_zoho_pending_auth','1');
+    window.location.href='https://accounts.zoho.com/oauth/v2/auth?'+params.toString();
+  });
+}
+
+function generateCodeVerifier(){
+  var array=new Uint8Array(32);
+  crypto.getRandomValues(array);
+  return btoa(String.fromCharCode.apply(null,array)).replace(/\+/g,'-').replace(/\//g,'_').replace(/=/g,'');
+}
+
+function generateCodeChallenge(verifier){
+  var encoder=new TextEncoder();
+  var data=encoder.encode(verifier);
+  return crypto.subtle.digest('SHA-256',data).then(function(hash){
+    return btoa(String.fromCharCode.apply(null,new Uint8Array(hash))).replace(/\+/g,'-').replace(/\//g,'_').replace(/=/g,'');
+  });
+}
+
+function zohoExchangeCode(code){
+  var clientId=localStorage.getItem('rp6_zoho_client_id')||'';
+  var verifier=localStorage.getItem('rp6_zoho_verifier')||'';
+  localStorage.removeItem('rp6_zoho_pending_auth');
+  localStorage.removeItem('rp6_zoho_verifier');
+
+  // Zoho PKCE token exchange
+  var params=new URLSearchParams({
+    grant_type:'authorization_code',
+    client_id:clientId,
+    redirect_uri:ZOHO_REDIRECT,
+    code:code,
+    code_verifier:verifier
+  });
+
+  fetch('https://accounts.zoho.com/oauth/v2/token',{
+    method:'POST',
+    headers:{'Content-Type':'application/x-www-form-urlencoded'},
+    body:params.toString()
+  })
+  .then(function(r){return r.json();})
+  .then(function(data){
+    if(data.access_token){
+      localStorage.setItem('rp6_zoho_access_token',data.access_token);
+      if(data.refresh_token)localStorage.setItem('rp6_zoho_refresh_token',data.refresh_token);
+      // Clean URL then sync
+      window.history.replaceState({},'',ZOHO_REDIRECT);
+      showTab('settings');
+      setTimeout(function(){zohoSync();},400);
+    } else {
+      alert('Zoho auth failed: '+(data.error||JSON.stringify(data))+'\n\nNote: Zoho\'s PKCE flow may require the app to be set up as "Client-based Application" in the API Console. See instructions below.');
+      window.history.replaceState({},'',ZOHO_REDIRECT);
+      showTab('settings');
+    }
+  })
+  .catch(function(err){
+    alert('Token exchange error: '+err.message);
+    window.history.replaceState({},'',ZOHO_REDIRECT);
+  });
+}
+
+function zohoRefreshToken(){
+  var clientId=localStorage.getItem('rp6_zoho_client_id')||'';
+  var refreshToken=localStorage.getItem('rp6_zoho_refresh_token')||'';
+  if(!refreshToken)return Promise.reject('No refresh token');
+  var params=new URLSearchParams({
+    grant_type:'refresh_token',
+    client_id:clientId,
+    refresh_token:refreshToken
+  });
+  return fetch('https://accounts.zoho.com/oauth/v2/token',{
+    method:'POST',
+    headers:{'Content-Type':'application/x-www-form-urlencoded'},
+    body:params.toString()
+  })
+  .then(function(r){return r.json();})
+  .then(function(data){
+    if(data.access_token){
+      localStorage.setItem('rp6_zoho_access_token',data.access_token);
+      return data.access_token;
+    }
+    throw new Error(data.error||'Refresh failed');
+  });
+}
+
+function zohoSync(){
+  var token=localStorage.getItem('rp6_zoho_access_token');
+  if(!token){alert('Not connected to Zoho. Please connect first.');return;}
+  var statusEl=document.getElementById('zoho-sync-status');
+  var btnEl=document.getElementById('zoho-sync-btn');
+  if(statusEl)statusEl.textContent='Syncing…';
+  if(btnEl)btnEl.disabled=true;
+
+  var today=new Date();
+  var in4weeks=new Date(today.getTime()+28*24*60*60*1000);
+  var fmt=function(d){return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');};
+  var criteria='(Next_Session_Date:between:'+fmt(today)+','+fmt(in4weeks)+')';
+  var url='https://www.zohoapis.com/crm/v3/Accounts/search?criteria='+encodeURIComponent(criteria)+'&fields=Account_Name,Next_Session_Date,Next_Session_Time&per_page=200';
+
+  function doFetch(accessToken){
+    return fetch(url,{headers:{'Authorization':'Zoho-oauthtoken '+accessToken}})
+    .then(function(r){
+      if(r.status===401){
+        return zohoRefreshToken().then(function(newToken){
+          return fetch(url,{headers:{'Authorization':'Zoho-oauthtoken '+newToken}});
+        });
+      }
+      return r;
+    })
+    .then(function(r){return r.json();});
+  }
+
+  doFetch(token).then(function(data){
+    if(btnEl)btnEl.disabled=false;
+    if(!data.data&&data.status_code===204){
+      // No results
+      localStorage.setItem('rp6_zoho_last_sync',new Date().toISOString());
+      if(statusEl)statusEl.textContent='Sync complete — no sessions found in next 4 weeks.';
+      applyZohoSessions([]);
+      return;
+    }
+    if(!data.data){
+      var msg=data.message||data.error||JSON.stringify(data);
+      if(statusEl)statusEl.textContent='Sync error: '+msg;
+      return;
+    }
+    localStorage.setItem('rp6_zoho_last_sync',new Date().toISOString());
+    var sessions=data.data.map(function(r){
+      return{name:(r.Account_Name||'').trim(),date:r.Next_Session_Date,time:r.Next_Session_Time||''};
+    });
+    applyZohoSessions(sessions);
+    var count=sessions.length;
+    if(statusEl)statusEl.textContent='Sync complete — '+count+' client'+(count===1?'':'s')+' with sessions found.';
+    renderSettings();
+  }).catch(function(err){
+    if(btnEl)btnEl.disabled=false;
+    if(statusEl)statusEl.textContent='Error: '+err.message;
+  });
+}
+
+function applyZohoSessions(sessions){
+  // Store the session list
+  localStorage.setItem('rp6_zoho_sessions',JSON.stringify(sessions));
+  // Match against contacts by name (case-insensitive)
+  var contacts=gC();
+  var matched=0;
+  contacts.forEach(function(c){
+    var cname=(c.name||'').toLowerCase().trim();
+    var match=sessions.find(function(s){return s.name.toLowerCase()===cname;});
+    c.zohoSession=match?match.date:null;
+    c.zohoSessionTime=match?match.time:null;
+  });
+  wr('rp6_contacts',contacts);
+  matched=sessions.filter(function(s){
+    return contacts.some(function(c){return (c.name||'').toLowerCase().trim()===s.name.toLowerCase();});
+  }).length;
+  console.log('Zoho sync: '+sessions.length+' sessions, '+matched+' matched contacts');
+}
+
+function zohoDisconnect(){
+  if(!confirm('Disconnect from Zoho? Session sync data will be cleared.'))return;
+  ['rp6_zoho_access_token','rp6_zoho_refresh_token','rp6_zoho_last_sync','rp6_zoho_sessions','rp6_zoho_verifier','rp6_zoho_pending_auth'].forEach(function(k){localStorage.removeItem(k);});
+  var contacts=gC();
+  contacts.forEach(function(c){delete c.zohoSession;delete c.zohoSessionTime;});
+  wr('rp6_contacts',contacts);
+  renderSettings();
+}
+
+// Check for Zoho OAuth callback on page load
+(function(){
+  var params=new URLSearchParams(window.location.search);
+  var code=params.get('code');
+  var pending=localStorage.getItem('rp6_zoho_pending_auth');
+  if(code&&pending){
+    zohoExchangeCode(code);
+  }
+})();
+// ── End Zoho Integration ──────────────────────────────────────────────────
 
 checkRollover();
 if(!gW().length&&gC().length)genWeekly();
