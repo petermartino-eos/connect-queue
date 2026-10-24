@@ -1146,7 +1146,7 @@ function renderSettings(){
     +'<label class="btn" style="cursor:pointer"><i class="ti ti-database-import"></i> Import backup&hellip;<input type="file" accept=".json" style="display:none" onchange="importBackup(event)"></label>'
     +'</div></div>';
 
-  var zohoClientId=localStorage.getItem('rp6_zoho_client_id')||'';
+  var zohoClientId=localStorage.getItem('rp6_zoho_client_id')||ZOHO_DEFAULT_CLIENT_ID;
   var zohoConnected=!!localStorage.getItem('rp6_zoho_access_token');
   var zohoLastSync=localStorage.getItem('rp6_zoho_last_sync');
   var zohoStatus=zohoConnected
@@ -1310,30 +1310,24 @@ function fmtSessionDate(iso){
 // ── Zoho CRM Integration ──────────────────────────────────────────────────
 var ZOHO_REDIRECT=location.origin+location.pathname;
 var ZOHO_SCOPE='ZohoCRM.modules.Accounts.READ';
+var ZOHO_DEFAULT_CLIENT_ID='1000.9AZA69BZBAFS2ZHNJX4KLAVN49E0OE';
 
 function zohoConnect(){
-  var clientId=(document.getElementById('zoho-client-id')||{}).value||localStorage.getItem('rp6_zoho_client_id')||'';
+  var clientId=(document.getElementById('zoho-client-id')||{}).value||localStorage.getItem('rp6_zoho_client_id')||ZOHO_DEFAULT_CLIENT_ID;
   clientId=clientId.trim();
   if(!clientId){alert('Please enter your Zoho Client ID first.');return;}
   localStorage.setItem('rp6_zoho_client_id',clientId);
 
-  // PKCE: generate code verifier + challenge
-  var verifier=generateCodeVerifier();
-  localStorage.setItem('rp6_zoho_verifier',verifier);
-  generateCodeChallenge(verifier).then(function(challenge){
-    var params=new URLSearchParams({
-      response_type:'code',
-      client_id:clientId,
-      scope:ZOHO_SCOPE,
-      redirect_uri:ZOHO_REDIRECT,
-      access_type:'offline',
-      code_challenge:challenge,
-      code_challenge_method:'S256',
-      prompt:'consent'
-    });
-    localStorage.setItem('rp6_zoho_pending_auth','1');
-    window.location.href='https://accounts.zoho.com/oauth/v2/auth?'+params.toString();
+  // Implicit flow for client-based apps — token returned directly in URL hash
+  var params=new URLSearchParams({
+    response_type:'token',
+    client_id:clientId,
+    scope:ZOHO_SCOPE,
+    redirect_uri:ZOHO_REDIRECT,
+    prompt:'consent'
   });
+  localStorage.setItem('rp6_zoho_pending_auth','1');
+  window.location.href='https://accounts.zoho.com/oauth/v2/auth?'+params.toString();
 }
 
 function generateCodeVerifier(){
@@ -1500,6 +1494,25 @@ function zohoDisconnect(){
 
 // Check for Zoho OAuth callback on page load
 (function(){
+  // Implicit flow: token in URL hash
+  var hash=window.location.hash;
+  if(hash&&hash.indexOf('access_token')>=0){
+    var hashParams=new URLSearchParams(hash.replace(/^#/,''));
+    var token=hashParams.get('access_token');
+    var expiresIn=hashParams.get('expires_in');
+    if(token){
+      localStorage.setItem('rp6_zoho_access_token',token);
+      localStorage.removeItem('rp6_zoho_pending_auth');
+      if(expiresIn){
+        localStorage.setItem('rp6_zoho_token_expiry',Date.now()+parseInt(expiresIn)*1000);
+      }
+      window.history.replaceState({},'',ZOHO_REDIRECT);
+      showTab('settings');
+      setTimeout(function(){zohoSync();},400);
+      return;
+    }
+  }
+  // Auth code flow fallback
   var params=new URLSearchParams(window.location.search);
   var code=params.get('code');
   var pending=localStorage.getItem('rp6_zoho_pending_auth');
