@@ -357,7 +357,7 @@ function mkCard(w,contacts,types,priorities,stages,actions){
     +(w.manual&&!w.pinned?'<span class="mb"><i class="ti ti-hand-finger" style="font-size:10px"></i> added manually</span>':'')
     +(od?'<span class="ob">overdue</span>':'')
     +(sug?'<span class="badge" style="background:#FBEAF0;color:#72243E;font-style:italic">try: '+sug+'</span>':'')
-    +(w.session&&c.zohoSession?'<span class="badge" style="background:#FFF3E0;color:#8B4513;font-weight:600"><i class="ti ti-calendar-event" style="font-size:10px"></i> Session '+fmtSessionDate(c.zohoSession)+(c.zohoSessionTime?' '+c.zohoSessionTime:'')+'</span>':'')
+    +(c.zohoSession?'<span class="badge" style="background:#FFF3E0;color:#8B4513;font-weight:600"><i class="ti ti-calendar-event" style="font-size:10px"></i> Session '+fmtSessionDate(c.zohoSession)+(c.zohoSessionTime?' '+c.zohoSessionTime:'')+'</span>':'')
     +'</div>'
     +'<div class="lr">'
     +'<button onclick="openLogModal('+w.id+')" class="btnp btnsm"><i class="ti ti-edit"></i> Log action</button>'
