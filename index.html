@@ -167,6 +167,12 @@ const DS=[
   {id:'90min-held',label:'90-Min Held'},{id:'converted',label:'Converted'},
 ];
 const COLOR_OPTIONS=['coral','teal','purple','blue','gray','amber','green','pink'];
+const DSB=[
+  {id:'sb1',daysFrom:0,daysTo:6,pts:40},
+  {id:'sb2',daysFrom:7,daysTo:14,pts:30},
+  {id:'sb3',daysFrom:15,daysTo:20,pts:20},
+  {id:'sb4',daysFrom:21,daysTo:28,pts:10},
+];
 const COLS={
   coral:{bg:'#FAECE7',tx:'#712B13'},teal:{bg:'#E1F5EE',tx:'#085041'},
   purple:{bg:'#EEEDFE',tx:'#3C3489'},blue:{bg:'#E6F1FB',tx:'#0C447C'},
@@ -189,6 +195,7 @@ function gPunted(){return rd('rp6_punted_ids',[]);}
 function gWkSt(){return rd('rp6_wkst',{pts:0,done:0,weekStart:curWkStart()});}
 function gWkLog(){return rd('rp6_wklog',[]);}
 function gThresh(){return rd('rp6_thresh',65);}
+function gSB(){return rd('rp6_session_boosts',DSB);}
 
 function ds(d){if(!d)return 999;var parts=d.split('-');var local=new Date(parseInt(parts[0]),parseInt(parts[1])-1,parseInt(parts[2]));return Math.floor((Date.now()-local)/86400000);}
 function td(){return new Date().toISOString().split('T')[0];}
@@ -224,7 +231,23 @@ function calcScore(c){
   const cadence=type.cadence||90;
   const daysSince=ds(c.lastContact);
   const timeBoost=daysSince>=cadence?20:Math.round((daysSince/cadence)*20);
-  return {total:typeBoost+priorityBoost+timeBoost,typeBoost,priorityBoost,timeBoost};
+  // Session boost — days until next session
+  var sessionBoost=0;
+  if(c.zohoSession){
+    var sp=c.zohoSession.split('-');
+    var sDate=new Date(parseInt(sp[0]),parseInt(sp[1])-1,parseInt(sp[2]));
+    var today=new Date();today.setHours(0,0,0,0);
+    var daysUntil=Math.floor((sDate-today)/86400000);
+    if(daysUntil>=0){
+      var boosts=gSB();
+      for(var i=0;i<boosts.length;i++){
+        if(daysUntil>=boosts[i].daysFrom&&daysUntil<=boosts[i].daysTo){
+          sessionBoost=boosts[i].pts;break;
+        }
+      }
+    }
+  }
+  return {total:typeBoost+priorityBoost+timeBoost+sessionBoost,typeBoost,priorityBoost,timeBoost,sessionBoost};
 }
 function isOverdue(c){
   const types=gT();
@@ -273,10 +296,9 @@ function genWeekly(){
     const manual=c.addedToWeek===cws;
     const aboveThresh=total>=thresh;
     const wasDone=exMap[c.id]?.done||false;
+    if(puntedIds.has(c.id))return;
     const hasSession=hasUpcomingSession(c);
-    // Session clients always appear (even if punted), others respect punt
-    if(!hasSession&&puntedIds.has(c.id))return;
-    if(pinned||manual||aboveThresh||wasDone||hasSession){
+    if(pinned||manual||aboveThresh||wasDone){
       selected.push({
         id:c.id,
         done:exMap[c.id]?.done||false,
@@ -308,7 +330,7 @@ function mkCard(w,contacts,types,priorities,stages,actions){
   const type=types.find(t=>t.id===c.typeId)||types[0];
   const priority=priorities.find(p=>p.id===c.priorityId);
   const stage=stages.find(s=>s.id===c.stageId);
-  const {total,typeBoost,priorityBoost,timeBoost}=calcScore(c);
+  const {total,typeBoost,priorityBoost,timeBoost,sessionBoost}=calcScore(c);
   const od=!w.pinned&&isOverdue(c);
   const d=ds(c.lastContact);
   const dtxt=d===999?'never':d===0?'today':d===1?'yesterday':d+'d ago';
@@ -343,7 +365,7 @@ function mkCard(w,contacts,types,priorities,stages,actions){
     +'<button onclick="openEditFromWeekly('+c.id+')" class="ibtn" title="Edit contact" style="margin-left:auto"><i class="ti ti-user-edit"></i></button>'
     +'</div>'
     +'</div>'
-    +'<div class="sc"><div class="sc-total">'+total+'</div><div class="sc-breakdown">'+typeBoost+'+'+priorityBoost+'+'+timeBoost+'</div></div>'
+    +'<div class="sc"><div class="sc-total">'+total+'</div><div class="sc-breakdown">'+typeBoost+'+'+priorityBoost+'+'+timeBoost+(sessionBoost?'+<span style="color:#8B4513">'+sessionBoost+'</span>':'')+'</div></div>'
     +'</div></div>';
 }
 
@@ -1149,6 +1171,21 @@ function renderSettings(){
     +'<div class="addrow"><input type="text" id="new-aname" placeholder="New action name…"><input type="number" id="new-apts" value="1" min="0" max="99" step="1" placeholder="pts"><button class="btn" onclick="addAction()"><i class="ti ti-plus"></i> Add</button></div>'
     +'<div class="save-row"><button class="btnp" id="save-actions-btn" onclick="saveActions()">Save actions</button><button class="btn" onclick="resetActions()">Reset to defaults</button></div></div>';
 
+  var sboosts=gSB();
+  html+='<div class="sblock"><h3>Session date boosts <span style="font-size:11px;color:var(--tx2);font-weight:400">(days until next session → score boost)</span></h3>'
+    +'<p style="font-size:12px;color:var(--tx2);margin-bottom:10px">Add extra points when a contact\'s session is approaching. Applied on top of their regular score.</p>'
+    +'<table class="etbl" style="width:100%"><colgroup><col style="width:auto"><col style="width:auto"><col style="width:80px"><col style="width:44px"></colgroup>'
+    +'<thead><tr><th>Days from</th><th>Days to</th><th style="text-align:right">Boost pts</th><th></th></tr></thead><tbody>'
+    +sboosts.map(function(b){return'<tr>'
+      +'<td style="padding-right:6px"><input type="number" id="sbf-'+b.id+'" value="'+b.daysFrom+'" min="0" max="365"></td>'
+      +'<td style="padding-right:6px"><input type="number" id="sbt-'+b.id+'" value="'+b.daysTo+'" min="0" max="365"></td>'
+      +'<td><input type="number" id="sbp-'+b.id+'" value="'+b.pts+'" min="0" max="200"></td>'
+      +'<td style="text-align:center"><button class="ibtn" data-sbid="'+b.id+'" onclick="delSessionBoost(this.dataset.sbid)"><i class="ti ti-trash"></i></button></td>'
+      +'</tr>';}).join('')
+    +'</tbody></table>'
+    +'<div class="addrow"><input type="number" id="new-sbf" value="29" min="0" max="365" placeholder="from"><input type="number" id="new-sbt" value="35" min="0" max="365" placeholder="to"><input type="number" id="new-sbp" value="5" min="0" max="200" placeholder="pts"><button class="btn" onclick="addSessionBoost()"><i class="ti ti-plus"></i> Add tier</button></div>'
+    +'<div class="save-row"><button class="btnp" id="save-sb-btn" onclick="saveSessionBoosts()">Save session boosts</button><button class="btn" onclick="resetSessionBoosts()">Reset to defaults</button></div></div>';
+
   html+='<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:1rem"><button class="btn" onclick="resetAll()">Reset all defaults</button></div>';
   html+='<div class="sblock" style="border-color:#E24B4A33"><h3 style="color:#E24B4A">Danger zone</h3>'
     +'<p style="font-size:13px;color:var(--tx2);margin-bottom:12px">Permanently delete all contacts, history, and settings. Cannot be undone.</p>'
@@ -1226,7 +1263,25 @@ function saveActions(){
 function addAction(){var ne=document.getElementById('new-aname'),pe=document.getElementById('new-apts');var name=(ne?ne.value:'').trim();if(!name)return;var actions=gA();actions.push({id:'a'+Date.now(),label:name,pts:Math.round(parseInt(pe?pe.value:1)||0)});wr('rp6_actions',actions);if(ne)ne.value='';if(pe)pe.value='1';renderSettings();}
 function delAction(id){wr('rp6_actions',gA().filter(function(a){return a.id!==id;}));renderSettings();}
 function resetActions(){wr('rp6_actions',DA);renderSettings();}
-function resetAll(){wr('rp6_types',DT);wr('rp6_priority',DP);wr('rp6_stages',DS);wr('rp6_actions',DA);wr('rp6_thresh',65);renderSettings();}
+function saveSessionBoosts(){
+  var boosts=gSB().map(function(b){
+    var f=document.getElementById('sbf-'+b.id),t=document.getElementById('sbt-'+b.id),p=document.getElementById('sbp-'+b.id);
+    return{id:b.id,daysFrom:f?parseInt(f.value)||0:b.daysFrom,daysTo:t?parseInt(t.value)||0:b.daysTo,pts:p?parseInt(p.value)||0:b.pts};
+  });
+  wr('rp6_session_boosts',boosts);
+  genWeekly();
+  var btn=document.getElementById('save-sb-btn');if(btn){var o=btn.textContent;btn.textContent='Saved!';setTimeout(function(){btn.textContent=o;},1400);}
+}
+function addSessionBoost(){
+  var f=document.getElementById('new-sbf'),t=document.getElementById('new-sbt'),p=document.getElementById('new-sbp');
+  var boosts=gSB();
+  boosts.push({id:'sb'+Date.now(),daysFrom:parseInt(f?f.value:0)||0,daysTo:parseInt(t?t.value:0)||0,pts:parseInt(p?p.value:0)||0});
+  wr('rp6_session_boosts',boosts);
+  renderSettings();
+}
+function delSessionBoost(id){wr('rp6_session_boosts',gSB().filter(function(b){return b.id!==id;}));renderSettings();}
+function resetSessionBoosts(){wr('rp6_session_boosts',DSB);renderSettings();}
+function resetAll(){wr('rp6_types',DT);wr('rp6_priority',DP);wr('rp6_stages',DS);wr('rp6_actions',DA);wr('rp6_thresh',65);wr('rp6_session_boosts',DSB);renderSettings();}
 function clearAllData(){
   if(!confirm('Permanently delete ALL contacts, history, weekly data, and settings?\n\nCannot be undone.'))return;
   if(!confirm('Are you absolutely sure?'))return;
@@ -1237,7 +1292,7 @@ function clearAllData(){
   location.reload();
 }
 
-var BACKUP_KEYS=['rp6_contacts','rp6_weekly','rp6_hist','rp6_wkst','rp6_wklog','rp6_types','rp6_priority','rp6_stages','rp6_actions','rp6_nextId','rp6_thresh','rp6_punted_ids'];
+var BACKUP_KEYS=['rp6_contacts','rp6_weekly','rp6_hist','rp6_wkst','rp6_wklog','rp6_types','rp6_priority','rp6_stages','rp6_actions','rp6_nextId','rp6_thresh','rp6_punted_ids','rp6_session_boosts'];
 
 function exportBackup(){
   var backup={version:'cq1',exported:new Date().toISOString(),data:{}};
