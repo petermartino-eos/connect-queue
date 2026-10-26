@@ -1644,7 +1644,7 @@ function zohoAutoSync(){
 // ── End Zoho Integration ──────────────────────────────────────────────────
 
 checkRollover();
-if(!gW().length&&gC().length)genWeekly();
+if(gC().length)genWeekly();
 renderWeekly();
 zohoAutoSync();
 
