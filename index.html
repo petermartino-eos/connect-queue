@@ -295,10 +295,9 @@ function genWeekly(){
     const pinned=isPinnedThisWeek(c);
     const manual=c.addedToWeek===cws;
     const aboveThresh=total>=thresh;
-    const wasDone=exMap[c.id]?.done||false;
     if(puntedIds.has(c.id))return;
     const hasSession=hasUpcomingSession(c);
-    if(pinned||manual||aboveThresh||wasDone){
+    if(pinned||manual||aboveThresh){
       selected.push({
         id:c.id,
         done:exMap[c.id]?.done||false,
