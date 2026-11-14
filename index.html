@@ -603,6 +603,7 @@ function sortC(contacts){
     else if(SC==='type'){var ta=types.find(t=>t.id===a.typeId),tb=types.find(t=>t.id===b.typeId);av=ta?ta.label:'';bv=tb?tb.label:'';}
     else if(SC==='priority'){var po={high:3,medium:2,low:1};av=po[a.priorityId]||0;bv=po[b.priorityId]||0;}
     else if(SC==='days'){av=ds(a.lastContact);bv=ds(b.lastContact);}
+    else if(SC==='session'){av=a.zohoSession||'9999-99-99';bv=b.zohoSession||'9999-99-99';}
     else{av=calcScore(a).total;bv=calcScore(b).total;}
     if(av<bv)return SD==='asc'?-1:1;if(av>bv)return SD==='asc'?1:-1;return 0;
   });
@@ -646,7 +647,8 @@ function renderContacts(){
       +'<td style="font-weight:500">'+c.name+(c.archived?' <span style="font-size:10px;color:var(--tx2)">[archived]</span>':'')+'</td>'
       +'<td><span class="badge" style="background:'+cl.bg+';color:'+cl.tx+'">'+type.label+'</span></td>'
       +'<td>'+(priority?'<span class="badge" style="background:'+priBg+';color:'+priTx+'">'+priority.label+'</span>':'—')+'</td>'
-      +'<td style="color:'+(od?'#E24B4A':'var(--tx)')+'">'+(dtxt)+(pn?' <i class="ti ti-pin" style="font-size:11px;color:#185FA5"></i><span style="font-size:10px;color:#185FA5"> '+fud+'</span>':'')+(c.zohoSession?' <span style="font-size:10px;color:#8B4513;font-weight:600"><i class="ti ti-calendar-event" style="font-size:10px"></i> '+fmtSessionDate(c.zohoSession)+'</span>':'')+'</td>'
+      +'<td style="color:'+(od?'#E24B4A':'var(--tx)')+'">'+(dtxt)+(pn?' <i class="ti ti-pin" style="font-size:11px;color:#185FA5"></i><span style="font-size:10px;color:#185FA5"> '+fud+'</span>':'')+'</td>'
+      +'<td style="font-size:12px;color:'+(c.zohoSession?'#8B4513':'var(--tx2)')+';font-weight:'+(c.zohoSession?'600':'400')+'\">'+(c.zohoSession?'<i class="ti ti-calendar-event" style="font-size:11px"></i> '+fmtSessionDate(c.zohoSession):'—')+'</td>'
       +'<td style="font-weight:500">'+sc+'</td>'
       +'<td style="white-space:nowrap">'
       +'<button class="btnp btnsm" data-cid="'+c.id+'" onclick="logFromContacts(this.dataset.cid)" style="margin-right:3px"><i class="ti ti-edit"></i> Log</button>'
@@ -667,12 +669,13 @@ function renderContacts(){
     +'<button onclick="openAddModal()" class="btnp" style="white-space:nowrap"><i class="ti ti-plus"></i> Add</button>'
     +'</div>'
     +'<table class="ctbl"><thead><tr>'
-    +'<th style="width:20%" class="'+(SC==='name'?'sa':'')+'" data-col="name" onclick="setSC(this.dataset.col)">Name'+thI('name')+'</th>'
-    +'<th style="width:16%" class="'+(SC==='type'?'sa':'')+'" data-col="type" onclick="setSC(this.dataset.col)">Type'+thI('type')+'</th>'
-    +'<th style="width:10%" class="'+(SC==='priority'?'sa':'')+'" data-col="priority" onclick="setSC(this.dataset.col)">Priority'+thI('priority')+'</th>'
-    +'<th style="width:14%" class="'+(SC==='days'?'sa':'')+'" data-col="days" onclick="setSC(this.dataset.col)">Last contact'+thI('days')+'</th>'
-    +'<th style="width:8%" class="'+(SC==='score'?'sa':'')+'" data-col="score" onclick="setSC(this.dataset.col)">Score'+thI('score')+'</th>'
-    +'<th style="width:32%"></th>'
+    +'<th style="width:19%" class="'+(SC==='name'?'sa':'')+'" data-col="name" onclick="setSC(this.dataset.col)">Name'+thI('name')+'</th>'
+    +'<th style="width:14%" class="'+(SC==='type'?'sa':'')+'" data-col="type" onclick="setSC(this.dataset.col)">Type'+thI('type')+'</th>'
+    +'<th style="width:9%" class="'+(SC==='priority'?'sa':'')+'" data-col="priority" onclick="setSC(this.dataset.col)">Priority'+thI('priority')+'</th>'
+    +'<th style="width:12%" class="'+(SC==='days'?'sa':'')+'" data-col="days" onclick="setSC(this.dataset.col)">Last contact'+thI('days')+'</th>'
+    +'<th style="width:12%" class="'+(SC==='session'?'sa':'')+'" data-col="session" onclick="setSC(this.dataset.col)">Session date'+thI('session')+'</th>'
+    +'<th style="width:7%" class="'+(SC==='score'?'sa':'')+'" data-col="score" onclick="setSC(this.dataset.col)">Score'+thI('score')+'</th>'
+    +'<th style="width:27%"></th>'
     +'</tr></thead><tbody>'+rows+'</tbody></table>';
   if(hadFocus){var inp=document.getElementById('srch');if(inp){inp.focus();var len=inp.value.length;inp.setSelectionRange(len,len);}}
 }
@@ -748,6 +751,7 @@ function saveLogFromContacts(){
   window._logFromContactsCid=null;
   closeModal();
   renderContacts();
+  renderScorebar();
 }
 
 function toggleAddToWeek(cid){
@@ -825,8 +829,9 @@ function saveContact(id){
   };
   if(!id){contacts.push(contact);wr('rp6_nextId',contact.id+1);}
   else{var i=contacts.findIndex(c=>c.id===id);if(i>=0)contacts[i]=contact;}
-  wr('rp6_contacts',contacts);genWeekly();closeModal();
-  if(window._onSave){var cb=window._onSave;window._onSave=null;setTimeout(cb,0);}
+  wr('rp6_contacts',contacts);genWeekly();
+  var cb=window._onSave;closeModal();
+  if(cb)setTimeout(cb,0);
 }
 function closeModal(){document.getElementById('mc').innerHTML='';window._onSave=null;}
 
@@ -1097,7 +1102,7 @@ function deleteLogEntry(hid){
   if(wasCurrWeek){
     var st=gWkSt();
     var newPts=Math.max(0,st.pts-h.pts);
-    var otherEntries=hist.filter(function(e){return e.cid===h.cid&&e.weekStart===curWkStart();});
+    var otherEntries=h.cid!=null?hist.filter(function(e){return e.cid===h.cid&&e.weekStart===curWkStart();}):[];
     var newDone=otherEntries.length>0?st.done:Math.max(0,st.done-1);
     wr('rp6_wkst',{pts:newPts,done:newDone,weekStart:st.weekStart});
     if(otherEntries.length===0){
